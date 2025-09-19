@@ -4,8 +4,6 @@ import logging
 import traceback
 import warnings
 from datetime import timedelta, datetime
-
-from django.contrib.messages.api import success
 from django.db import transaction, IntegrityError
 from django.utils import timezone
 from abc import ABC, abstractmethod
@@ -58,12 +56,15 @@ class BaseScheduler(ABC):
         )
 
     def update_kwargs(self, **kwargs):
+        protected_kwargs = ["SCHEDULERS"]
         for k, v in kwargs.items():
+            if k.upper() in protected_kwargs:
+                continue
             if k.upper() not in SchedulerKwargs.__annotations__:
                 raise SchedulerException(f"invalid kwarg: {k} = {v}")
-            if k.lower() == "interval" and isinstance(v, timedelta):
-                v = int(v.total_seconds())
             setattr(self, k.lower(), v)
+        if isinstance(self.interval, timedelta):
+            self.interval = int(self.interval.total_seconds())
 
     @property
     def logger(self):
@@ -134,14 +135,13 @@ def load_schedulers() -> list[BaseScheduler]:
         if not issubclass(cls, BaseScheduler):
             logger.warning(f"{cls_path} is not a subclass of BaseScheduler")
             continue
-
-        if not kwargs.get("ENABLED"):
-            logger.info(f"Scheduler {cls_path} is disabled, skipping.")
-            continue
         try:
             scheduler_instance = cls(**kwargs)
-            schedulers.append(scheduler_instance)
-            logger.info(f"Loaded scheduler: {cls_path}")
+            if scheduler_instance.enabled:
+                schedulers.append(scheduler_instance)
+                logger.info(f"Loaded scheduler: {cls_path}")
+            else:
+                logger.info(f"Scheduler {cls_path} is disabled, skipping.")
         except Exception as e:
             logger.error(f"Failed to initialize scheduler {cls_path}: {e}")
     return schedulers
@@ -149,7 +149,6 @@ def load_schedulers() -> list[BaseScheduler]:
 
 class Scheduler(BaseScheduler):
     interval: float | int | timedelta = timedelta(seconds=1)
-    name = "Scheduler"
 
     def __init__(self, model=None):
         super(Scheduler, self).__init__(model=model)
@@ -176,17 +175,17 @@ class Scheduler(BaseScheduler):
         kwargs = getattr(settings, "DJANGO_SCHED", {})
         self.update_kwargs(**kwargs)
         if not self.enabled:
-            logger.info("Scheduler is disabled in settings, exiting.")
+            logger.warning("❌ Scheduler is disabled in settings, exiting.")
             return None
         self.schedulers = load_schedulers()
         if not self.schedulers:
-            logger.warning("no schedulers loaded, exiting.")
+            logger.warning("❌ no schedulers loaded, exiting.")
             return None
-        scheduler_model = acquirer_scheduler()
+        scheduler_model = acquirer_scheduler(name=self.name, max_interval=min([x.interval for x in self.schedulers]))
         if not scheduler_model:
-            logger.warning("another scheduler is already running, giving up.")
+            logger.warning("❌ another scheduler is already running, giving up.")
             return None
-        logger.info(f"lock acquired, scheduler started as {scheduler_model.owner}")
+        logger.info(f"✅ lock acquired, scheduler started as {scheduler_model.owner}")
         self.model = scheduler_model
         if embedded_process:
             signals.scheduler_embedded_init.send(sender=self)
@@ -243,7 +242,7 @@ else:
             self.terminate()
 
 
-def acquirer_scheduler(name=Scheduler.name) -> models.Scheduler | None:
+def acquirer_scheduler(name, max_interval=10) -> models.Scheduler | None:
     now = timezone.now()
     try:
         with transaction.atomic():
@@ -255,7 +254,7 @@ def acquirer_scheduler(name=Scheduler.name) -> models.Scheduler | None:
             # 获得操作锁，防止并发
             lock = models.Scheduler.objects.create(name="__lock__", locked=True, locked_time=now)
         except IntegrityError:
-            updated = models.Scheduler.objects.filter(name="__lock__", locked_time__lt=now - timedelta(seconds=3)).update(locked_time=now)
+            updated = models.Scheduler.objects.filter(name="__lock__", locked_time__lt=now - timedelta(seconds=max_interval)).update(locked_time=now)
             if updated:
                 lock = models.Scheduler.objects.get(name="__lock__")
             else:
@@ -263,6 +262,7 @@ def acquirer_scheduler(name=Scheduler.name) -> models.Scheduler | None:
                 return None
         try:
             scheduler = models.Scheduler.objects.get(name=name)
+            scheduler.interval = max_interval
             if scheduler.is_lock_expired:
                 # holder 死了 → 接管
                 scheduler.owner = models.OWNER
@@ -276,7 +276,10 @@ def acquirer_scheduler(name=Scheduler.name) -> models.Scheduler | None:
                 expire_time = scheduler.lock_expire_time
 
                 latest_scheduler = None
-                while timezone.now() < expire_time:
+                while (now := timezone.now()) < expire_time:
+                    # 这里要给操作锁续期
+                    lock.locked_time = now
+                    lock.save(update_fields=["locked_time"])
                     time.sleep(1)
                     # 等待 holder 心跳更新
                     logger.info(f"holder<{scheduler.owner}> is alive, waiting for it to finish, expire at {expire_time}.")

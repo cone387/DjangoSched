@@ -33,14 +33,14 @@ class Scheduler(models.Model):
 
     @property
     def heartbeat(self):
-        return self.last_tick_time or self.locked_time
+        now = timezone.now().replace(year=2025, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        heartbeat = max([self.locked_time or now, self.last_tick_time or now])
+        return heartbeat
 
     @property
     def lock_expire_time(self):
         delta = timedelta(seconds=max(10, self.interval * 2))
-        expired_time = timezone.now() - delta
-        heartbeat = max([self.locked_time or expired_time, self.last_tick_time or expired_time])
-        return heartbeat + delta
+        return self.heartbeat + delta
 
     @property
     def is_lock_expired(self):
