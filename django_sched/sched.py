@@ -4,6 +4,8 @@ import logging
 import traceback
 import warnings
 from datetime import timedelta, datetime
+
+from django.contrib.messages.api import success
 from django.db import transaction, IntegrityError
 from django.utils import timezone
 from abc import ABC, abstractmethod
@@ -11,7 +13,7 @@ from threading import Thread, Event
 from django_sched import signals, models
 from django.conf import settings
 from django.utils.module_loading import import_string
-
+from typing import TypedDict, Literal
 
 try:
     from billiard import ensure_multiprocessing
@@ -30,21 +32,42 @@ class SchedulerException(Exception):
     pass
 
 
+class SchedulerKwargs(TypedDict):
+    ENABLED: bool
+    ENABLE_LOGGING: bool
+    LOGGING_LEVEL: Literal["SUCCESS", "ERROR"] | None
+    INTERVAL: int | float | timedelta
+
+
 class BaseScheduler(ABC):
     name: str = None
+    enabled: bool = True
+    enable_logging: bool = True
+    logging_level: Literal["SUCCESS", "ERROR"] | None = None
     interval: int | timedelta = timedelta(seconds=1)
     last_schedule_time: datetime = timezone.now()
     model = None
 
-    def __init__(self, model: models.Scheduler = None):
-        if isinstance(self.interval, timedelta):
-            self.interval = int(self.interval.total_seconds())
+    def __init__(self, model: models.Scheduler = None, **kwargs):
+        self.update_kwargs(**kwargs)
         if self.name is None:
             self.name = self.__class__.__name__
         self.model = model or self.model or models.Scheduler(
             name=self.name,
             interval=self.interval,
         )
+
+    def update_kwargs(self, **kwargs):
+        for k, v in kwargs.items():
+            if k.upper() not in SchedulerKwargs.__annotations__:
+                raise SchedulerException(f"invalid kwarg: {k} = {v}")
+            if k.lower() == "interval" and isinstance(v, timedelta):
+                v = int(v.total_seconds())
+            setattr(self, k.lower(), v)
+
+    @property
+    def logger(self):
+        return logger
 
     @abstractmethod
     def schedule(self, now):
@@ -70,20 +93,24 @@ class BaseScheduler(ABC):
         return None, delay
 
     def _schedule(self, now) -> models.SchedulerLog:
-        log = models.SchedulerLog(scheduler=self.name, started_at=now, owner=self.model.owner)
+        log = models.SchedulerLog(scheduler=self.name, started_at=now, owner=self.model.owner, success=True)
         try:
             self.schedule(now)
         except Exception as e:
-            logger.error(f"{self.name} schedule error: {e}")
             logger.exception(e)
             message = traceback.format_exc()
             log.message = message
             log.success = False
         log.finished_at = timezone.now()
         log.duration = (log.finished_at - log.started_at).total_seconds()
-        log.save()
+        if self.enable_logging:
+            if self.logging_level == "ERROR" and log.success:
+                logger.debug(f"{self.name} schedule finished in {log.duration}s, success: {log.success}")
+            else:
+                log.save()
+        else:
+            logger.debug(f"{self.name} schedule finished in {log.duration}s, success: {log.success}")
         return log
-
 
 
 def load_schedulers() -> list[BaseScheduler]:
@@ -91,12 +118,13 @@ def load_schedulers() -> list[BaseScheduler]:
     Load scheduler classes defined in settings.DJANGO_SCHED['SCHEDULERS'].
     Each class must be a subclass of BaseScheduler.
     """
-    scheduler_classes = getattr(settings, "DJANGO_SCHED", {}).get("SCHEDULERS", [])
+    scheduler_classes = getattr(settings, "DJANGO_SCHED", {}).get("SCHEDULERS", {})
     if not scheduler_classes:
         logger.warning("No schedulers configured in settings.DJANGO_SCHED['SCHEDULERS']")
         return []
     schedulers = []
-    for cls_path in scheduler_classes:
+    for cls_path, kwargs in scheduler_classes.items():
+        kwargs: SchedulerKwargs
         try:
             cls = import_string(cls_path)
         except ImportError as e:
@@ -106,8 +134,12 @@ def load_schedulers() -> list[BaseScheduler]:
         if not issubclass(cls, BaseScheduler):
             logger.warning(f"{cls_path} is not a subclass of BaseScheduler")
             continue
+
+        if not kwargs.get("ENABLED"):
+            logger.info(f"Scheduler {cls_path} is disabled, skipping.")
+            continue
         try:
-            scheduler_instance = cls()
+            scheduler_instance = cls(**kwargs)
             schedulers.append(scheduler_instance)
             logger.info(f"Loaded scheduler: {cls_path}")
         except Exception as e:
@@ -123,7 +155,7 @@ class Scheduler(BaseScheduler):
         super(Scheduler, self).__init__(model=model)
         self._is_shutdown = Event()
         self._is_stopped = Event()
-        self.schedulers: list[BaseScheduler] = load_schedulers()
+        self.schedulers: list[BaseScheduler] = []
 
     def schedule(self, now):
         intervals = []
@@ -141,6 +173,12 @@ class Scheduler(BaseScheduler):
         return log
 
     def start(self, embedded_process=False):
+        kwargs = getattr(settings, "DJANGO_SCHED", {})
+        self.update_kwargs(**kwargs)
+        if not self.enabled:
+            logger.info("Scheduler is disabled in settings, exiting.")
+            return None
+        self.schedulers = load_schedulers()
         if not self.schedulers:
             logger.warning("no schedulers loaded, exiting.")
             return None
