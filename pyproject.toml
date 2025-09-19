@@ -1,0 +1,25 @@
+[project]
+name = "django-sched"
+version = "0.1.0"
+description = "轻量级的 Django 定时任务调度框架，基于数据库锁实现进程/线程级调度与日志记录。"
+readme = "README.md"
+requires-python = ">=3.13"
+license-files = ["LICENSE"]
+authors = [
+  { name = "cone387" },
+]
+keywords = ["django", "scheduler", "cron", "task"]
+dependencies = [
+  "django>=5.0",
+]
+
+urls = { Homepage = "https://github.com/cone387/DjangoSched.git", Repository = "https://github.com/cone387/DjangoSched.git" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["django_sched*"]
+
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
