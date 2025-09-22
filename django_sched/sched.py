@@ -91,10 +91,10 @@ class BaseScheduler(ABC):
         now = timezone.now()
         is_due, delay = self.is_due(now=now)
         if is_due:
-            signals.tick_started.send(sender=self, tick_time=now)
+            signals.tick_started.send(sender=self.__class__, tick_time=now)
             log = self._schedule(now)
             self.last_schedule_time = now
-            signals.tick_ended.send(sender=self, tick_time=now, log=log)
+            signals.tick_ended.send(sender=self.__class__, tick_time=now, log=log)
             return log, self.interval
         return None, delay
 
@@ -103,7 +103,7 @@ class BaseScheduler(ABC):
         try:
             self.schedule(now)
         except Exception as e:
-            signals.tick_error.send(sender=self, tick_time=now, exception=e)
+            signals.tick_error.send(sender=self.__class__, tick_time=now, exception=e)
             logger.exception(e)
             message = traceback.format_exc()
             log.message = message
@@ -193,7 +193,7 @@ class Scheduler(BaseScheduler):
             return None
         logger.info(f"✅ lock acquired, scheduler started as {scheduler_model.owner}")
         self.model = scheduler_model
-        signals.scheduler_started.send(sender=self)
+        signals.scheduler_started.send(sender=self.__class__)
         try:
             while not self._is_shutdown.is_set():
                 log, interval = self.tick()
@@ -202,7 +202,7 @@ class Scheduler(BaseScheduler):
         except (KeyboardInterrupt, SystemExit):
             self._is_shutdown.set()
         finally:
-            signals.scheduler_stopped.send(sender=self)
+            signals.scheduler_stopped.send(sender=self.__class__)
             scheduler_model.locked = False
             scheduler_model.save(update_fields=["locked"])
 
