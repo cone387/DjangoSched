@@ -1,6 +1,6 @@
 [project]
 name = "django-sched"
-version = "0.1.0"
+version = "0.1.1"
 description = "轻量级的 Django 定时任务调度框架，基于数据库锁实现进程/线程级调度与日志记录。"
 readme = "README.md"
 requires-python = ">=3.13"
