@@ -1,4 +1,5 @@
 from django.apps import AppConfig
+from django.db.backends.signals import connection_created
 import logging
 import sys
 
@@ -23,6 +24,12 @@ class DjangoSchedConfig(AppConfig):
         if self._scheduler_started:
             return
 
-        from .sched import start_scheduler
-        start_scheduler()
+        def launch_scheduler(sender, connection, **kwargs):
+            connection_created.disconnect(
+                launch_scheduler, dispatch_uid="start-scheduler"
+            )
+            from .sched import start_scheduler
+            start_scheduler()
+
+        connection_created.connect(launch_scheduler, dispatch_uid="start-scheduler")
         self._scheduler_started = True

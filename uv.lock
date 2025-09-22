@@ -12,6 +12,15 @@ wheels = [
 ]
 
 [[package]]
+name = "billiard"
+version = "4.2.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b9/6a/1405343016bce8354b29d90aad6b0bf6485b5e60404516e4b9a3a9646cf0/billiard-4.2.2.tar.gz", hash = "sha256:e815017a062b714958463e07ba15981d802dc53d41c5b69d28c5a7c238f8ecf3", size = 155592, upload-time = "2025-09-20T14:44:40.456Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a6/80/ef8dff49aae0e4430f81842f7403e14e0ca59db7bbaf7af41245b67c6b25/billiard-4.2.2-py3-none-any.whl", hash = "sha256:4bc05dcf0d1cc6addef470723aac2a6232f3c7ed7475b0b580473a9145829457", size = 86896, upload-time = "2025-09-20T14:44:39.157Z" },
+]
+
+[[package]]
 name = "django"
 version = "5.2.6"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -26,15 +35,23 @@ wheels = [
 ]
 
 [[package]]
-name = "djangosched"
-version = "0.1.0"
+name = "django-sched"
+version = "0.1.1"
 source = { virtual = "." }
 dependencies = [
     { name = "django" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "billiard" },
+]
+
 [package.metadata]
 requires-dist = [{ name = "django", specifier = ">=5.0" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "billiard", specifier = ">=4.2.2" }]
 
 [[package]]
 name = "sqlparse"

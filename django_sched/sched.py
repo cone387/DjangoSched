@@ -30,11 +30,15 @@ class SchedulerException(Exception):
     pass
 
 
+RunMode = Literal["process", "thread", "inline"]
+
+
 class SchedulerKwargs(TypedDict):
     ENABLED: bool
     ENABLE_LOGGING: bool
     LOGGING_LEVEL: Literal["SUCCESS", "ERROR"] | None
     INTERVAL: int | float | timedelta
+    RUN_MODE: RunMode
 
 
 class BaseScheduler(ABC):
@@ -173,7 +177,7 @@ class Scheduler(BaseScheduler):
         self.model.save(update_fields=["last_tick_time"])
         return log
 
-    def start(self, embedded_process=False):
+    def start(self):
         kwargs = getattr(settings, "DJANGO_SCHED", {})
         self.update_kwargs(**kwargs)
         if not self.enabled:
@@ -237,11 +241,12 @@ else:
             self.name = 'Scheduler'
 
         def run(self):
-            self.scheduler.start(embedded_process=True)
+            self.scheduler.start()
 
         def stop(self):
             self.scheduler.stop()
             self.terminate()
+            self.join(timeout=5)
 
 
 def acquirer_scheduler(name, max_interval=10) -> models.Scheduler | None:
@@ -303,33 +308,29 @@ def acquirer_scheduler(name, max_interval=10) -> models.Scheduler | None:
                 lock.delete()
 
 
-def EmbeddedScheduler(thread=False, **kwargs):
+def EmbeddedScheduler(run_mode, **kwargs):
     """Return embedded clock service.
     Arguments:
-        thread (bool): Run threaded instead of as a separate process.
-            Uses :mod:`multiprocessing` by default, if available.
+        run_mode: str: 'process' or 'thread'.
     """
-    if thread or _Process is None:
+    if run_mode == "thread" or _Process is None:
         # Need short max interval to be able to stop thread
         # in reasonable time.
         return _Threaded(**kwargs)
     return _Process(**kwargs)
 
 
-def start_scheduler(embedded_process=False, thread=False, **kwargs):
+def start_scheduler(run_mode: RunMode = None, **kwargs):
     """Start the scheduler as a separate process or embedded thread.
 
     Arguments:
-        embedded_process (bool): Run the scheduler in the current process.
-            This will block the current process.
-        thread (bool): Run the scheduler as an embedded thread instead of
-            a separate process. Uses :mod:`multiprocessing` by default,
-            if available.
+        run_mode: str: 'process', 'thread' or 'inline'.
     """
-    if embedded_process:
+    if run_mode is None:
+        run_mode = getattr(settings, "DJANGO_SCHED", {}).get("RUN_MODE", "thread")
+    if run_mode == "inline":
         scheduler = Scheduler(**kwargs)
-        scheduler.start(embedded_process=True)
     else:
-        scheduler = EmbeddedScheduler(thread=thread, **kwargs)
-        scheduler.start()
+        scheduler = EmbeddedScheduler(run_mode, **kwargs)
+    scheduler.start()
     return scheduler
